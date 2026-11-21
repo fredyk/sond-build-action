@@ -72,5 +72,51 @@ rc=$?
 [ "$rc" = 0 ] && ok "a build with only the musl prefix restored succeeds" || { bad "a build with only the musl prefix restored succeeds (rc=$rc)"; tail -20 "$work/build2.log"; }
 [ ! -e "$work/w2/musl-build.log" ] && ok "a restored musl prefix is not rebuilt" || bad "a restored musl prefix is not rebuilt"
 
+# A dependency: --depends NAME VERSION fetches the published package into a sysroot the build
+# compiles against, and its licences ship in the package. `sondpkg fetch` (tested in
+# sond-distro-pkg) is replaced by a fake that records its arguments and installs a header.
+distro=$work/distro
+if [ -n "${SOND_DISTRO_PKG:-}" ]; then cp -a "$SOND_DISTRO_PKG" "$distro"; else git clone -q --depth 1 https://github.com/fredyk/sond-distro-pkg "$distro"; fi
+mv "$distro/sondpkg/bin/sondpkg" "$distro/sondpkg/bin/sondpkg.real"
+cat >"$distro/sondpkg/bin/sondpkg" <<'PY'
+import os, subprocess, sys
+here = os.path.dirname(os.path.abspath(__file__))
+if sys.argv[1] != "fetch":
+    sys.exit(subprocess.call([sys.executable, os.path.join(here, "sondpkg.real")] + sys.argv[1:]))
+with open(os.environ["FAKE_FETCH_LOG"], "a") as log:
+    log.write(" ".join(sys.argv[1:]) + "\n")
+into = sys.argv[sys.argv.index("--into") + 1]
+os.makedirs(os.path.join(into, "include"), exist_ok=True)
+with open(os.path.join(into, "include", "greet.h"), "w") as h:
+    h.write('#define GREETING "hi-from-%s"\n' % sys.argv[2])
+os.makedirs(os.path.join(into, "share", "licenses", sys.argv[2]), exist_ok=True)
+with open(os.path.join(into, "share", "licenses", sys.argv[2], "COPYING"), "w") as h:
+    h.write("greet licence\n")
+print("object=sha256:" + "0" * 64)
+PY
+cat >"$fork/greet.c" <<'C'
+#include <stdio.h>
+#include <greet.h>
+int main(void) { puts(GREETING); return 0; }
+C
+mkdir -p "$work/w3/forks"
+cp -a "$work/w/forks/toolchain" "$work/w3/forks/"
+FAKE_FETCH_LOG=$work/fetch.log SOND_WORK=$work/w3 SOND_DISTRO_PKG=$distro \
+	bash "$here/build.sh" \
+	--fork "$fork" --repository fredyk/hello-sond \
+	--name hello --version 1.1 --license 0BSD \
+	--upstream github.com/example/hello@0000000000000000000000000000000000000000 \
+	--license-file LICENSE --depends "greet 2.0" \
+	--build 'mkdir -p "$SOND_PAYLOAD/bin" && $SOND_CC $SOND_CFLAGS -static $SOND_LDFLAGS -o "$SOND_PAYLOAD/bin/hello" greet.c' \
+	--out "$work/out3" >"$work/build3.log" 2>"$work/build3.err"
+rc=$?
+[ "$rc" = 0 ] && ok "a build with a dependency succeeds" || { bad "a build with a dependency succeeds (rc=$rc)"; tail -20 "$work/build3.err"; }
+grep -qx "fetch greet 2.0 --url https://dist.sond.dev --log-key 072f2d42e0c81e0d075a50585e63bfbe74f2f8d65a0d6db2c1185f432d5a44e8 --into $work/w3/sysroot" "$work/fetch.log" &&
+	ok "the dependency is fetched from dist.sond.dev under its pinned log key" || bad "the dependency is fetched from dist.sond.dev under its pinned log key ($(cat "$work/fetch.log" 2>&1))"
+b3=$(ls -d "$work/out3"/hello-1.1-* 2>/dev/null | head -n1)
+[ "$("$b3/payload/bin/hello" 2>/dev/null)" = "hi-from-greet" ] && ok "the build compiles against the sysroot" || bad "the build compiles against the sysroot"
+[ -f "$b3/payload/share/licenses/hello/greet-COPYING" ] && ok "the dependency's licence ships in the package" || bad "the dependency's licence ships in the package"
+[ ! -e "$b3/payload/include/greet.h" ] && ok "the sysroot itself is not packaged" || bad "the sysroot itself is not packaged"
+
 [ "$fail" = 0 ] && printf 'test-build: OK\n' || printf 'test-build: FAIL\n'
 exit $fail

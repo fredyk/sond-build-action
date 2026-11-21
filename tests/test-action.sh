@@ -27,6 +27,9 @@ runs = [s.get("run", "") for s in steps]
 check(not any("${{" in r for r in runs), "no ${{ }} expression inside any run: (inputs go through env)")
 build = next((s for s in steps if s.get("id") == "build"), {})
 check('"$GITHUB_ACTION_PATH/build.sh"' in build.get("run", ""), "the build step runs build.sh from the action")
+check("depends" in inputs and inputs["depends"].get("required") is not True, "input depends (optional)")
+check("inputs.depends" in str((build.get("env") or {}).get("IN_DEPENDS", "")), "depends reaches the build step through env")
+check('args+=(--depends "$d")' in build.get("run", ""), "each depends line becomes a --depends")
 check(re.search(r'>>\s*"\$GITHUB_OUTPUT"', build.get("run", "")) is not None, "build.sh's stdout becomes the step outputs")
 outs = a.get("outputs") or {}
 for o in ["bundle", "payload_hash"]:

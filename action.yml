@@ -25,6 +25,13 @@ inputs:
   license-files:
     description: Licence files to ship, one PATH[=DEST] per line, relative to the fork.
     default: ""
+  depends:
+    description: >-
+      Published packages the build compiles against, one "NAME VERSION" per line. Each is
+      fetched from dist.sond.dev and checked under the pinned log key into $SOND_SYSROOT;
+      its licences ship in the package.
+    required: false
+    default: ""
   linkage:
     description: Linkage line recorded in the manifest.
     default: static musl 1.2.5 (MIT)
@@ -84,6 +91,7 @@ runs:
         IN_UPSTREAM: ${{ inputs.upstream }}
         IN_BUILD: ${{ inputs.build }}
         IN_LICENSE_FILES: ${{ inputs.license-files }}
+        IN_DEPENDS: ${{ inputs.depends }}
         IN_LINKAGE: ${{ inputs.linkage }}
         IN_TIER: ${{ inputs.tier }}
         IN_OUT: ${{ inputs.out }}
@@ -94,6 +102,9 @@ runs:
         while IFS= read -r f; do
           [ -n "$f" ] && args+=(--license-file "$f")
         done <<<"$IN_LICENSE_FILES"
+        while IFS= read -r d; do
+          [ -n "$d" ] && args+=(--depends "$d")
+        done <<<"$IN_DEPENDS"
         "$GITHUB_ACTION_PATH/build.sh" "${args[@]}" >>"$GITHUB_OUTPUT"
 
     - if: inputs.upload-artifact == 'true'

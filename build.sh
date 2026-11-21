@@ -8,7 +8,13 @@
 # usage: build.sh --fork DIR --repository OWNER/REPO --name N --version V
 #                 --license SPDX --upstream HOST/OWNER/REPO@SHA40 --build CMD
 #                 [--license-file PATH[=DEST]]... [--linkage TEXT] [--tier T]
-#                 --out DIR
+#                 [--depends "NAME VERSION"]... --out DIR
+#
+# Each --depends package is fetched from the registry (SOND_REGISTRY_URL, default
+# https://dist.sond.dev) with `sondpkg fetch`, checked under the pinned log key
+# (SOND_LOG_KEY), into the sysroot $SOND_SYSROOT; the build compiles against it
+# (-I and -L in SOND_CFLAGS and SOND_LDFLAGS, PKG_CONFIG_LIBDIR and
+# PKG_CONFIG_SYSROOT_DIR) and the package ships each dependency's licences.
 #
 # Environment: SOND_WORK (scratch, default $RUNNER_TEMP/sond or a temp dir),
 # SOND_DISTRO_PKG (a sond-distro-pkg checkout; cloned from GitHub without it).
@@ -25,6 +31,7 @@ fork= repository= name= version= license= upstream= build= out=
 linkage="static musl 1.2.5 (MIT)"
 tier=public
 license_files=()
+depends=()
 while [ $# -gt 0 ]; do
 	case $1 in
 	--fork) fork=$2 ;;
@@ -37,6 +44,7 @@ while [ $# -gt 0 ]; do
 	--license-file) license_files+=("$2") ;;
 	--linkage) linkage=$2 ;;
 	--tier) tier=$2 ;;
+	--depends) depends+=("$2") ;;
 	--out) out=$2 ;;
 	*) usage ;;
 	esac
@@ -85,7 +93,28 @@ mkdir -p "$payload"
 SOND_CC=$PREFIX/bin/musl-gcc
 SOND_CFLAGS=$(repro_cflags "$fork")
 SOND_LDFLAGS=$(repro_ldflags)
-export SOND_CC SOND_CFLAGS SOND_LDFLAGS SOND_PAYLOAD=$payload SOURCE_DATE_EPOCH
+
+# Dependencies: published packages, checked under the pinned log key, in a sysroot.
+registry=${SOND_REGISTRY_URL:-https://dist.sond.dev}
+log_key=${SOND_LOG_KEY:-072f2d42e0c81e0d075a50585e63bfbe74f2f8d65a0d6db2c1185f432d5a44e8}
+SOND_SYSROOT=$work/sysroot
+dep_names=()
+for dep in "${depends[@]}"; do
+	read -r dep_name dep_version extra <<<"$dep"
+	if [ -z "$dep_version" ] || [ -n "$extra" ]; then
+		printf 'build.sh: --depends wants "NAME VERSION", got "%s"\n' "$dep" >&2
+		exit 2
+	fi
+	python3 "$distro/sondpkg/bin/sondpkg" fetch "$dep_name" "$dep_version" \
+		--url "$registry" --log-key "$log_key" --into "$SOND_SYSROOT" >&2
+	dep_names+=("$dep_name")
+done
+if [ ${#depends[@]} -gt 0 ]; then
+	SOND_CFLAGS="$SOND_CFLAGS -I$SOND_SYSROOT/include"
+	SOND_LDFLAGS="$SOND_LDFLAGS -L$SOND_SYSROOT/lib"
+	export PKG_CONFIG_LIBDIR=$SOND_SYSROOT/lib/pkgconfig PKG_CONFIG_SYSROOT_DIR=$SOND_SYSROOT
+fi
+export SOND_CC SOND_CFLAGS SOND_LDFLAGS SOND_SYSROOT SOND_PAYLOAD=$payload SOURCE_DATE_EPOCH
 # stdout carries only the results below; the build's own output goes to stderr.
 (cd "$fork" && bash -euo pipefail -c "$build") >&2
 
@@ -104,6 +133,13 @@ for spec in "${license_files[@]}"; do
 	dest=
 	[ "$spec" != "$file" ] && dest="=${spec#*=}"
 	args+=(--license-file "$fork/$file$dest")
+done
+
+# A dependency is linked in statically: its licences ship inside this package.
+for dep_name in "${dep_names[@]}"; do
+	for f in "$SOND_SYSROOT/share/licenses/$dep_name"/*; do
+		[ -f "$f" ] && args+=(--license-file "$f=share/licenses/$name/$dep_name-$(basename "$f")")
+	done
 done
 
 # Every package links musl statically, and musl's COPYRIGHT must ship inside it.
