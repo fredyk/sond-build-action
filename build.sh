@@ -186,9 +186,21 @@ tarball=$srcdir/$name-$version.tar.gz
 git -C "$fork" archive --format=tar --prefix="$name-$version/" "$sha" | gzip -n >"$tarball"
 
 # bundled: the archives the linker pulled in, as recorded in the maps.
+# An ELF executable or shared object (e_type 2 or 3): something a linker produced.
+is_linked_elf() {
+	[ "$(head -c 4 "$1" 2>/dev/null | od -An -c | tr -d ' ')" = '177ELF' ] || return 1
+	case $(od -An -tu2 -j16 -N2 "$1" | tr -d ' ') in 2 | 3) return 0 ;; esac
+	return 1
+}
 if [ ${#depends[@]} -gt 0 ] && ! compgen -G "$maps/map.*" >/dev/null; then
-	printf 'build.sh: --depends given but no link went through $SOND_CC, so what is bundled cannot be known; link with $SOND_CC\n' >&2
-	exit 1
+	# A static library compiled against a dependency's headers links nothing; anything linked
+	# that the maps did not see would hide what is bundled.
+	while IFS= read -r -d '' f; do
+		if is_linked_elf "$f"; then
+			printf 'build.sh: --depends given but %s was not linked through $SOND_CC, so what is bundled cannot be known; link with $SOND_CC\n' "${f#"$payload"/}" >&2
+			exit 1
+		fi
+	done < <(find "$payload" -type f -print0)
 fi
 linked=$({ cat "$maps"/map.* 2>/dev/null || true; } | sed -n 's|^\(/[^ (]*\.a\)(.*|\1|p' | xargs -r realpath -m | sort -u)
 bundled=()
@@ -220,9 +232,9 @@ for dep_name in "${dep_names[@]}"; do
 done
 # Built against linux-headers: a used header with no Linux-syscall-note branch that is not under
 # the kernel COPYING carries its notice (licence opinion 3.1, rule 10). The compiler's dependency
-# files (-MD: automake's .deps/*.Po, or *.d) say which headers were used.
+# files (-MD: automake's .deps/*.Po, libtool's *.Plo, or *.d) say which headers were used.
 if [ -n "${dep_version_of[linux-headers]:-}" ]; then
-	used=$({ find "$fork" -type f \( -name '*.d' -o -name '*.Po' \) -exec cat {} + 2>/dev/null || true; } |
+	used=$({ find "$fork" -type f \( -name '*.d' -o -name '*.Po' -o -name '*.Plo' \) -exec cat {} + 2>/dev/null || true; } |
 		tr ' \\\t' '\n\n\n' | sed 's/:$//; /^$/d' | xargs -r realpath -m | sort -u |
 		comm -12 - <(printf '%s\n' "${dep_headers_of[linux-headers]}" | xargs -r realpath -m | sort -u))
 	if [ -z "$used" ]; then

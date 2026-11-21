@@ -176,10 +176,22 @@ newws w4c
 FAKE_LIB=$work/lib/libgreet.a FAKE_FETCH_LOG=$work/fetch.log SOND_WORK=$work/w4c SOND_DISTRO_PKG=$distro bash "$here/build.sh" \
 	--fork "$fork" --repository fredyk/hello-sond --name hello --version 1.5 --license 0BSD \
 	--upstream github.com/example/hello@0000000000000000000000000000000000000000 --license-file LICENSE \
-	--depends "greet 2.0" --build 'mkdir -p "$SOND_PAYLOAD/bin" && cp LICENSE "$SOND_PAYLOAD/bin/hello"' \
+	--depends "greet 2.0" --build 'mkdir -p "$SOND_PAYLOAD/bin" && cp "$(type -P true)" "$SOND_PAYLOAD/bin/hello"' \
 	--out "$work/out4c" >/dev/null 2>"$work/build4c.err"
 rc=$?
 [ "$rc" != 0 ] && grep -q "SOND_CC" "$work/build4c.err" && ok "dependencies with no link through SOND_CC are refused" || { bad "dependencies with no link through SOND_CC are refused (rc=$rc)"; tail -5 "$work/build4c.err"; }
+# A static library compiled against a dependency's headers links nothing: there is no program
+# for the maps to see, the payload holds no executable, and bundled stays empty.
+newws w4d
+FAKE_LIB=$work/lib/libgreet.a FAKE_FETCH_LOG=$work/fetch.log SOND_WORK=$work/w4d SOND_DISTRO_PKG=$distro bash "$here/build.sh" \
+	--fork "$fork" --repository fredyk/hello-sond --name hello --version 1.6 --license 0BSD \
+	--upstream github.com/example/hello@0000000000000000000000000000000000000000 --license-file LICENSE \
+	--depends "greet 2.0" --build 'mkdir -p "$SOND_PAYLOAD/lib" "$SOND_PAYLOAD/include" && $SOND_CC $SOND_CFLAGS -c -o greet.o greet.c && ar rcs "$SOND_PAYLOAD/lib/libhello.a" greet.o && cp greet.c "$SOND_PAYLOAD/include/hello.h" && rm -f greet.o' \
+	--out "$work/out4d" >/dev/null 2>"$work/build4d.err"
+rc=$?
+[ "$rc" = 0 ] && ok "a static library built against a dependency's headers succeeds" || { bad "a static library built against a dependency's headers succeeds (rc=$rc)"; tail -5 "$work/build4d.err"; }
+b4d=$(ls -d "$work/out4d"/hello-1.6-* 2>/dev/null | head -n1)
+[ -n "$b4d" ] && ! grep -q '^ *bundled' "$b4d/MANIFEST" && ok "the library bundles nothing" || bad "the library bundles nothing"
 
 # The GPL source lane. A fork whose upstream commit is in its history, a marked change, the
 # corresponding source published as <name>-source: the fork at its commit, the patches since
@@ -306,6 +318,13 @@ b8=$(sed -n 's/^bundle=//p' "$work/build8.log")
 	ok "the kernel's licences do not ship with a binary that only includes its headers" ||
 	bad "the kernel's licences do not ship with a binary that only includes its headers"
 ! grep -q '^ *bundled' "$b8/MANIFEST" 2>/dev/null && ok "headers are not bundled" || bad "headers are not bundled"
+# libtool's objects keep their dependencies in .deps/*.Plo
+mkdir -p "$work/w8c/sond/forks" && cp -a "$work/w/forks/toolchain" "$work/w8c/sond/forks/"
+run_kc w8c 'mkdir -p .deps && $SOND_CC $SOND_CFLAGS -MD -MF .deps/kc.Plo -c kc.c -o kc.o && '"$kc_link" >"$work/build8c.log" 2>"$work/build8c.err"
+rc=$?
+b8c=$(sed -n 's/^bundle=//p' "$work/build8c.log")
+[ "$rc" = 0 ] && [ -f "$b8c/payload/share/licenses/kc/linux-headers/linux/perm.h" ] &&
+	ok "libtool's .Plo dependency files are read" || bad "libtool's .Plo dependency files are read (rc=$rc: $(tail -2 "$work/build8c.err"))"
 run_kc w8b '$SOND_CC $SOND_CFLAGS -c kc.c -o kc.o && '"$kc_link" >/dev/null 2>"$work/build8b.err"
 rc=$?
 [ "$rc" != 0 ] && grep -q -- '-MD' "$work/build8b.err" &&
