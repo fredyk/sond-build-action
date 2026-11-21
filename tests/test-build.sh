@@ -247,5 +247,28 @@ tag_object=$(git -C "$gpl" rev-parse v1)
 gpl_args[9]="github.com/example/gpl@$tag_object"
 refuse "an upstream that is a tag object" "not a commit" "$gpl"
 
+# A package with no binary at all (headers): its linkage names no musl, so neither the
+# payload nor the corresponding source carries musl.
+hdr=$work/hdr-sond
+mkdir -p "$hdr"
+printf '/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */\n#define HDR 1\n' >"$hdr/hdr.h"
+printf 'GNU GENERAL PUBLIC LICENSE Version 2\n' >"$hdr/COPYING"
+git -C "$hdr" init -q -b sond && gitc "$hdr" add -A && gitc "$hdr" commit -q -m upstream
+hdr_sha=$(git -C "$hdr" rev-parse HEAD)
+SOND_WORK=$work/w7/sond RUNNER_TEMP=$work/w7 SOND_DISTRO_PKG=${SOND_DISTRO_PKG:-} \
+	bash "$here/build.sh" --fork "$hdr" --repository fredyk/hdr-sond --name hdr --version 1.0 \
+	--license "GPL-2.0-only WITH Linux-syscall-note" --linkage "none (headers)" \
+	--upstream "github.com/example/hdr@$hdr_sha" --license-file COPYING \
+	--build 'mkdir -p "$SOND_PAYLOAD/include" && cp hdr.h "$SOND_PAYLOAD/include/"' \
+	--out "$work/out7" >"$work/build7.log" 2>"$work/build7.err"
+rc=$?
+[ "$rc" = 0 ] && ok "a headers-only build succeeds" || { bad "a headers-only build succeeds (rc=$rc)"; tail -20 "$work/build7.err"; }
+b7=$(sed -n 's/^bundle=//p' "$work/build7.log")
+s7=$(sed -n 's/^source_bundle=//p' "$work/build7.log")
+[ -n "$b7" ] && [ ! -e "$b7/payload/share/licenses/hdr/musl-COPYRIGHT" ] &&
+	ok "a headers-only payload carries no musl COPYRIGHT" || bad "a headers-only payload carries no musl COPYRIGHT"
+[ -n "$s7" ] && [ -f "$s7/payload/share/src/hdr/hdr-1.0.tar.gz" ] && ! ls "$s7/payload/share/src/hdr/"musl-* >/dev/null 2>&1 &&
+	ok "a headers-only source bundle holds the fork and no musl" || bad "a headers-only source bundle holds the fork and no musl"
+
 [ "$fail" = 0 ] && printf 'test-build: OK\n' || printf 'test-build: FAIL\n'
 exit $fail

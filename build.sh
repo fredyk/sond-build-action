@@ -210,8 +210,11 @@ for dep_name in "${dep_names[@]}"; do
 		[ -f "$f" ] && licence_src+=("$f") licence_dest+=("share/licenses/$name/$dep_name-$(basename "$f")")
 	done
 done
-# Every package links musl statically, and musl's COPYRIGHT must ship inside it.
-licence_src+=("$SRC_ROOT/musl-sond/COPYRIGHT") licence_dest+=("share/licenses/$name/musl-COPYRIGHT")
+# A package whose linkage names musl links it statically, and musl's COPYRIGHT must ship
+# inside it; a package with no binary (headers) names no musl and carries none.
+links_musl=0
+case $linkage in *musl*) links_musl=1 ;; esac
+[ "$links_musl" = 0 ] || licence_src+=("$SRC_ROOT/musl-sond/COPYRIGHT") licence_dest+=("share/licenses/$name/musl-COPYRIGHT")
 
 lane_args=("$license")
 for b in "${bundled[@]}"; do lane_args+=(--bundled "$b"); done
@@ -228,8 +231,10 @@ if [ "$lane_rc" = 0 ]; then
 	cp "$tarball" "$share/"
 	upstream_sha=${upstream##*@}
 	git -C "$fork" format-patch -q --no-signature --no-stat -o "$share/patches" "$upstream_sha..$sha" >/dev/null
-	git -C "$SRC_ROOT/musl-sond" archive --format=tar --prefix="musl-${MUSL_TAG#v}/" "$MUSL_COMMIT" |
-		gzip -n >"$share/musl-${MUSL_TAG#v}.tar.gz"
+	if [ "$links_musl" = 1 ]; then
+		git -C "$SRC_ROOT/musl-sond" archive --format=tar --prefix="musl-${MUSL_TAG#v}/" "$MUSL_COMMIT" |
+			gzip -n >"$share/musl-${MUSL_TAG#v}.tar.gz"
+	fi
 	git_base=${SOND_GIT_BASE:-https://}
 	for b in "${bundled[@]}"; do
 		read -r b_name b_version _ <<<"$b"
@@ -245,7 +250,7 @@ if [ "$lane_rc" = 0 ]; then
 	{
 		printf '#!/bin/sh\n# How %s %s was built from this source (sond-build-action).\n' "$name" "$version"
 		printf '# Fork: github.com/%s@%s; upstream: %s\n' "$repository" "$sha" "$upstream"
-		printf '# Toolchain: musl %s (musl-%s.tar.gz, commit %s), static.\n' "${MUSL_TAG#v}" "${MUSL_TAG#v}" "$MUSL_COMMIT"
+		[ "$links_musl" = 0 ] || printf '# Toolchain: musl %s (musl-%s.tar.gz, commit %s), static.\n' "${MUSL_TAG#v}" "${MUSL_TAG#v}" "$MUSL_COMMIT"
 		printf '# SOND_CC: musl-gcc; SOND_CFLAGS: %s; SOND_LDFLAGS: %s\n' "$(repro_cflags '$SRC')" "$(repro_ldflags)"
 		for dep in "${depends[@]}"; do printf '# Depends: %s, installed into $SOND_SYSROOT (-I$SOND_SYSROOT/include -L$SOND_SYSROOT/lib)\n' "$dep"; done
 		printf '# The build command, run in the fork with $SOND_PAYLOAD as the install root:\n%s\n' "$build"
