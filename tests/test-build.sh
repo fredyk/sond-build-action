@@ -131,6 +131,22 @@ b3=$(ls -d "$work/out3"/hello-1.1-* 2>/dev/null | head -n1)
 [ -f "$b3/payload/share/licenses/hello/greet-COPYING" ] && ok "the dependency's licence ships in the package" || bad "the dependency's licence ships in the package"
 [ ! -e "$b3/payload/include/greet.h" ] && ok "the sysroot itself is not packaged" || bad "the sysroot itself is not packaged"
 
+# A dependency's headers are system headers (-isystem): a redefinition there is not the fork's
+# warning, so a fork built with -Werror still compiles, as against its distribution's /usr/include.
+cat >"$fork/redef.c" <<'C'
+#define GREETING "the fork's own"
+#include <greet.h>
+int main(void) { return 0; }
+C
+mkdir -p "$work/w3b/forks" && cp -a "$work/w/forks/toolchain" "$work/w3b/forks/"
+FAKE_FETCH_LOG=$work/fetch.log SOND_WORK=$work/w3b SOND_DISTRO_PKG=$distro \
+	bash "$here/build.sh" --fork "$fork" --repository fredyk/hello-sond --name hello --version 1.2 --license 0BSD \
+	--upstream github.com/example/hello@0000000000000000000000000000000000000000 --license-file LICENSE --depends "greet 2.0" \
+	--build 'mkdir -p "$SOND_PAYLOAD/bin" && $SOND_CC $SOND_CFLAGS -Werror -static $SOND_LDFLAGS -o "$SOND_PAYLOAD/bin/hello" redef.c' \
+	--out "$work/out3b" >/dev/null 2>"$work/build3b.err"
+rc=$?
+[ "$rc" = 0 ] && ok "a dependency's headers are system headers" || { bad "a dependency's headers are system headers (rc=$rc)"; grep -m3 error "$work/build3b.err"; }
+
 grep -q '^bundled' "$b3/MANIFEST" && bad "a dependency only included, never linked, is not bundled" || ok "a dependency only included, never linked, is not bundled"
 
 # bundled comes from the link maps: a dependency whose archive the linker pulled in is recorded

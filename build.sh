@@ -13,7 +13,7 @@
 # Each --depends package is fetched from the registry (SOND_REGISTRY_URL, default
 # https://dist.sond.dev) with `sondpkg fetch`, checked under the pinned log key
 # (SOND_LOG_KEY), into the sysroot $SOND_SYSROOT; the build compiles against it
-# (-I and -L in SOND_CFLAGS and SOND_LDFLAGS, PKG_CONFIG_LIBDIR and
+# (-isystem and -L in SOND_CFLAGS and SOND_LDFLAGS, PKG_CONFIG_LIBDIR and
 # PKG_CONFIG_SYSROOT_DIR) and the package ships each dependency's licences.
 #
 # Every link the build makes is recorded in a linker map (SOND_CC is a wrapper
@@ -176,7 +176,7 @@ for dep in "${depends[@]}"; do
 		<({ find "$SOND_SYSROOT/include" -type f 2>/dev/null || true; } | sort) | sed '/^$/d')
 done
 if [ ${#depends[@]} -gt 0 ]; then
-	SOND_CFLAGS="$SOND_CFLAGS -I$SOND_SYSROOT/include"
+	SOND_CFLAGS="$SOND_CFLAGS -isystem $SOND_SYSROOT/include"
 	SOND_LDFLAGS="$SOND_LDFLAGS -L$SOND_SYSROOT/lib"
 	export PKG_CONFIG_LIBDIR=$SOND_SYSROOT/lib/pkgconfig PKG_CONFIG_SYSROOT_DIR=$SOND_SYSROOT
 fi
@@ -351,7 +351,7 @@ if [ "$lane_rc" = 0 ]; then
 		[ "$go_bin" = 0 ] || printf '# Toolchain: %s, CGO_ENABLED=%s, modules from the go.sum of the fork\n' "$(go env GOVERSION)" "$([ ${#cgo_args[@]} -gt 0 ] && echo 1 || echo 0)"
 		[ "$links_musl" = 0 ] || printf '# Toolchain: musl %s (musl-%s.tar.gz, commit %s), static.\n' "${MUSL_TAG#v}" "${MUSL_TAG#v}" "$MUSL_COMMIT"
 		printf '# SOND_CC: musl-gcc; SOND_CFLAGS: %s; SOND_LDFLAGS: %s\n' "$(repro_cflags '$SRC')" "$(repro_ldflags)"
-		for dep in "${depends[@]}"; do printf '# Depends: %s, installed into $SOND_SYSROOT (-I$SOND_SYSROOT/include -L$SOND_SYSROOT/lib)\n' "$dep"; done
+		for dep in "${depends[@]}"; do printf '# Depends: %s, installed into $SOND_SYSROOT (-isystem $SOND_SYSROOT/include -L$SOND_SYSROOT/lib)\n' "$dep"; done
 		printf '# The build command, run in the fork with $SOND_PAYLOAD as the install root:\n%s\n' "$build"
 	} >"$share/build-recipe.sh"
 	src_args=(build-bundle --name "$name-source" --version "$version" --license "$license"
