@@ -146,7 +146,7 @@ registry=${SOND_REGISTRY_URL:-https://dist.sond.dev}
 log_key=${SOND_LOG_KEY:-072f2d42e0c81e0d075a50585e63bfbe74f2f8d65a0d6db2c1185f432d5a44e8}
 SOND_SYSROOT=$work/sysroot
 dep_names=()
-declare -A dep_version_of=() dep_license_of=() dep_source_of=() dep_archives_of=()
+declare -A dep_version_of=() dep_license_of=() dep_source_of=() dep_archives_of=() dep_headers_of=()
 for dep in "${depends[@]}"; do
 	read -r dep_name dep_version extra <<<"$dep"
 	if [ -z "$dep_version" ] || [ -n "$extra" ]; then
@@ -154,6 +154,7 @@ for dep in "${depends[@]}"; do
 		exit 2
 	fi
 	before=$({ find "$SOND_SYSROOT" -name '*.a' 2>/dev/null || true; } | sort)
+	headers_before=$({ find "$SOND_SYSROOT/include" -type f 2>/dev/null || true; } | sort)
 	fetched=$(sondpkg fetch "$dep_name" "$dep_version" \
 		--url "$registry" --log-key "$log_key" --into "$SOND_SYSROOT")
 	printf '%s\n' "$fetched" >&2
@@ -163,6 +164,8 @@ for dep in "${depends[@]}"; do
 	dep_license_of[$dep_name]=$(sed -n 's/^license=//p' <<<"$fetched")
 	dep_source_of[$dep_name]=$(sed -n 's/^source=//p' <<<"$fetched")
 	dep_archives_of[$dep_name]=$(comm -13 <(printf '%s\n' "$before") <(printf '%s\n' "$after") | sed '/^$/d')
+	dep_headers_of[$dep_name]=$(comm -13 <(printf '%s\n' "$headers_before") \
+		<({ find "$SOND_SYSROOT/include" -type f 2>/dev/null || true; } | sort) | sed '/^$/d')
 done
 if [ ${#depends[@]} -gt 0 ]; then
 	SOND_CFLAGS="$SOND_CFLAGS -I$SOND_SYSROOT/include"
@@ -204,12 +207,30 @@ for spec in "${license_files[@]}"; do
 	[ "$spec" != "$file" ] && dest=${spec#*=}
 	licence_src+=("$fork/$file") licence_dest+=("$dest")
 done
-# A dependency is linked in statically: its licences ship inside this package.
+# A dependency's licences ship inside this package; linux-headers' do not (its headers are
+# covered by the syscall note, rule 10 below handles the rest).
 for dep_name in "${dep_names[@]}"; do
+	[ "$dep_name" = linux-headers ] && continue
 	for f in "$SOND_SYSROOT/share/licenses/$dep_name"/*; do
 		[ -f "$f" ] && licence_src+=("$f") licence_dest+=("share/licenses/$name/$dep_name-$(basename "$f")")
 	done
 done
+# Built against linux-headers: a used header with no Linux-syscall-note branch that is not under
+# the kernel COPYING carries its notice (licence opinion 3.1, rule 10). The compiler's dependency
+# files (-MD: automake's .deps/*.Po, or *.d) say which headers were used.
+if [ -n "${dep_version_of[linux-headers]:-}" ]; then
+	used=$({ find "$fork" -type f \( -name '*.d' -o -name '*.Po' \) -exec cat {} + 2>/dev/null || true; } |
+		tr ' \\\t' '\n\n\n' | sed 's/:$//; /^$/d' | xargs -r realpath -m | sort -u |
+		comm -12 - <(printf '%s\n' "${dep_headers_of[linux-headers]}" | xargs -r realpath -m | sort -u))
+	if [ -z "$used" ]; then
+		printf 'build.sh: built against linux-headers but no compiler dependency file (-MD) names one of its headers, so which notices must ship cannot be known; compile with -MD\n' >&2
+		exit 1
+	fi
+	while IFS= read -r rel; do
+		[ -n "$rel" ] || continue
+		licence_src+=("$SOND_SYSROOT/include/$rel") licence_dest+=("share/licenses/$name/linux-headers/$rel")
+	done < <(sondpkg linux-header-notices --include "$SOND_SYSROOT/include" $(sed "s|^$(realpath -m "$SOND_SYSROOT/include")/||" <<<"$used"))
+fi
 # A package whose linkage names musl links it statically, and musl's COPYRIGHT must ship
 # inside it; a package with no binary (headers) names no musl and carries none.
 links_musl=0

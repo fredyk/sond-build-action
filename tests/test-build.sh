@@ -92,6 +92,12 @@ with open(os.path.join(into, "include", "greet.h"), "w") as h:
 os.makedirs(os.path.join(into, "share", "licenses", sys.argv[2]), exist_ok=True)
 with open(os.path.join(into, "share", "licenses", sys.argv[2], "COPYING"), "w") as h:
     h.write("greet licence\n")
+if sys.argv[2] == "linux-headers":
+    os.makedirs(os.path.join(into, "include", "linux"), exist_ok=True)
+    with open(os.path.join(into, "include", "linux", "note.h"), "w") as h:
+        h.write("/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */\n#define NOTE_X 1\n")
+    with open(os.path.join(into, "include", "linux", "perm.h"), "w") as h:
+        h.write("/* SPDX-License-Identifier: MIT */\n/* Copyright perm authors */\n#define PERM_X 2\n")
 lib = os.environ.get("FAKE_LIB")
 if lib:
     import shutil
@@ -269,6 +275,42 @@ s7=$(sed -n 's/^source_bundle=//p' "$work/build7.log")
 	ok "a headers-only payload carries no musl COPYRIGHT" || bad "a headers-only payload carries no musl COPYRIGHT"
 [ -n "$s7" ] && [ -f "$s7/payload/share/src/hdr/hdr-1.0.tar.gz" ] && ! ls "$s7/payload/share/src/hdr/"musl-* >/dev/null 2>&1 &&
 	ok "a headers-only source bundle holds the fork and no musl" || bad "a headers-only source bundle holds the fork and no musl"
+
+# A binary built against linux-headers: nothing of it is bundled and the kernel's licences do
+# not ship, but a used header with neither the syscall note nor the COPYING carries its notice
+# (licence opinion 3.1, rule 10). The compiler's dependency files say which headers were used.
+kc=$work/kc-sond
+mkdir -p "$kc"
+printf '#include <stdio.h>\n#include <linux/note.h>\n#include <linux/perm.h>\nint main(void) { printf("%%d\\n", NOTE_X + PERM_X); return 0; }\n' >"$kc/kc.c"
+printf 'Zero-Clause BSD\n' >"$kc/LICENSE"
+git -C "$kc" init -q -b sond && gitc "$kc" add -A && gitc "$kc" commit -q -m kc
+run_kc() { # <workspace> <build>
+	FAKE_FETCH_LOG=$work/fetch.log SOND_WORK=$work/$1/sond RUNNER_TEMP=$work/$1 SOND_DISTRO_PKG=$distro \
+		bash "$here/build.sh" --fork "$kc" --repository fredyk/kc-sond --name kc --version 1.0 --license 0BSD \
+		--upstream github.com/example/kc@0000000000000000000000000000000000000000 --license-file LICENSE \
+		--depends "linux-headers 6.12.77" --build "$2" --out "$work/out-$1"
+}
+mkdir -p "$work/w8/sond/forks" "$work/w8b/sond/forks"
+cp -a "$work/w/forks/toolchain" "$work/w8/sond/forks/"
+cp -a "$work/w/forks/toolchain" "$work/w8b/sond/forks/"
+kc_link='mkdir -p "$SOND_PAYLOAD/bin" && $SOND_CC $SOND_CFLAGS -static $SOND_LDFLAGS -o "$SOND_PAYLOAD/bin/kc" kc.o'
+run_kc w8 '$SOND_CC $SOND_CFLAGS -MD -c kc.c -o kc.o && '"$kc_link" >"$work/build8.log" 2>"$work/build8.err"
+rc=$?
+[ "$rc" = 0 ] && ok "a build against linux-headers succeeds" || { bad "a build against linux-headers succeeds (rc=$rc)"; tail -20 "$work/build8.err"; }
+b8=$(sed -n 's/^bundle=//p' "$work/build8.log")
+[ -f "$b8/payload/share/licenses/kc/linux-headers/linux/perm.h" ] &&
+	ok "a used permissive-only kernel header carries its notice" || bad "a used permissive-only kernel header carries its notice"
+[ ! -e "$b8/payload/share/licenses/kc/linux-headers/linux/note.h" ] &&
+	ok "a header under the syscall note carries none" || bad "a header under the syscall note carries none"
+! ls "$b8/payload/share/licenses/kc/" 2>/dev/null | grep -q '^linux-headers-' &&
+	ok "the kernel's licences do not ship with a binary that only includes its headers" ||
+	bad "the kernel's licences do not ship with a binary that only includes its headers"
+! grep -q '^ *bundled' "$b8/MANIFEST" 2>/dev/null && ok "headers are not bundled" || bad "headers are not bundled"
+run_kc w8b '$SOND_CC $SOND_CFLAGS -c kc.c -o kc.o && '"$kc_link" >/dev/null 2>"$work/build8b.err"
+rc=$?
+[ "$rc" != 0 ] && grep -q -- '-MD' "$work/build8b.err" &&
+	ok "a build against linux-headers without dependency files is refused" ||
+	bad "a build against linux-headers without dependency files is refused (rc=$rc: $(tail -2 "$work/build8b.err"))"
 
 [ "$fail" = 0 ] && printf 'test-build: OK\n' || printf 'test-build: FAIL\n'
 exit $fail
