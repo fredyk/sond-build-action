@@ -413,5 +413,45 @@ s9=$(sed -n 's/^source_bundle=//p' "$work/build9b.log")
 [ -n "$s9" ] && python3 -c 'import sys, zipfile; print("\n".join(zipfile.ZipFile(sys.argv[1]).namelist()))' "$s9/payload/share/src/hi/example.com/mozilla@v1.0.0.zip" 2>/dev/null | grep -q 'mozilla.go' &&
 	ok "the MPL module's source is in the source bundle" || bad "the MPL module's source is in the source bundle ($(ls -R "$s9/payload/share/src" 2>&1 | head -5))"
 
+# A cgo binary (licence opinion 2.10 (b)): the Go side comes from `go version -m`, the C side
+# from the link maps, like any C program. It links statically through SOND_CC, so musl ships
+# and the dependency's archive is bundled.
+cgofork() { # <dir>
+	gofork "$1" example.com/greet
+	printf 'package main\n\n// #cgo LDFLAGS: -lgreet\n// const char *greeting(void);\nimport "C"\n\nimport (\n\t"fmt"\n\t"example.com/greet"\n)\n\nfunc main() { fmt.Println(C.GoString(C.greeting()) + "-" + greet.Word()) }\n' >"$1/main.go"
+	gitc "$1" commit -q -am cgo
+}
+cgofork "$work/hi-cgo-sond"
+cgo_env='CGO_ENABLED=1 CC="$SOND_CC" CGO_CFLAGS="$SOND_CFLAGS" CGO_LDFLAGS="$SOND_LDFLAGS"'
+cgo_static=$cgo_env' go build -trimpath -buildvcs=false -ldflags "-linkmode external -extldflags -static" -o "$SOND_PAYLOAD/bin/hi" .'
+run_cgo() { # <workspace> <build>
+	newws "$1"
+	FAKE_LIB=$work/lib/libgreet.a FAKE_FETCH_LOG=$work/fetch.log \
+	GOPROXY=file://$proxy GOSUMDB=off GOFLAGS=-mod=mod GOMODCACHE=$work/$1/gomod GOTOOLCHAIN=local \
+	SOND_WORK=$work/$1 SOND_DISTRO_PKG=$distro \
+		bash "$here/build.sh" --fork "$work/hi-cgo-sond" --repository fredyk/hi-sond --name hi --version 1.0 --license Apache-2.0 \
+		--upstream "github.com/example/hi@$(git -C "$work/hi-cgo-sond" rev-parse HEAD)" --license-file COPYING \
+		--depends "greet 2.0" --linkage "static Go $(go env GOVERSION | sed 's/^go//') + musl 1.2.5 (MIT), cgo" \
+		--build 'mkdir -p "$SOND_PAYLOAD/bin" && '"$2" --out "$work/out-$1"
+}
+run_cgo w9c "$cgo_static" >"$work/build9c.log" 2>"$work/build9c.err"
+rc=$?
+[ "$rc" = 0 ] && ok "a cgo build linking a dependency succeeds" || { bad "a cgo build linking a dependency succeeds (rc=$rc)"; tail -20 "$work/build9c.err"; }
+b9c=$(sed -n 's/^bundle=//p' "$work/build9c.log")
+l9c=$b9c/payload/share/licenses/hi
+[ "$("$b9c/payload/bin/hi" 2>/dev/null)" = "linked-greet-greet" ] && ok "the cgo binary runs" || bad "the cgo binary runs"
+for line in "greet 2.0 MIT" "musl 1.2.5 MIT" "go $(go env GOVERSION | sed 's/^go//') BSD-3-Clause" "example.com/greet v1.0.0 MIT"; do
+	grep -q "\"$line\"" "$b9c/MANIFEST" 2>/dev/null && ok "a cgo binary bundles $line" || bad "a cgo binary bundles $line"
+done
+[ -f "$l9c/musl-COPYRIGHT" ] && [ -f "$l9c/greet-COPYING" ] && [ -f "$l9c/go-LICENSE" ] &&
+	ok "a cgo binary ships musl's, the dependency's and Go's licences" || bad "a cgo binary ships musl's, the dependency's and Go's licences"
+# A cgo binary linked dynamically (here by the host's gcc instead of SOND_CC) loads C code at
+# run time that no map recorded.
+# A C helper linked through SOND_CC leaves a map, so only the cgo binary's own linking is wrong.
+run_cgo w9d 'printf "int main(void) { return 0; }\n" >h.c && $SOND_CC -static -o "$SOND_PAYLOAD/bin/h" h.c && rm h.c && CGO_ENABLED=1 CC=gcc CGO_LDFLAGS="-L$SOND_SYSROOT/lib" go build -trimpath -buildvcs=false -o "$SOND_PAYLOAD/bin/hi" .' >/dev/null 2>"$work/build9d.err"
+rc=$?
+[ "$rc" != 0 ] && grep -q 'not statically linked' "$work/build9d.err" &&
+	ok "a dynamically linked cgo binary is refused" || { bad "a dynamically linked cgo binary is refused (rc=$rc)"; tail -5 "$work/build9d.err"; }
+
 [ "$fail" = 0 ] && printf 'test-build: OK\n' || printf 'test-build: FAIL\n'
 exit $fail

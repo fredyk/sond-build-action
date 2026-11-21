@@ -21,8 +21,9 @@
 # archive the linker pulled in is `bundled` with its version and licence, and
 # musl with it; one only included is not.
 #
-# A linkage naming Go is a pure Go binary: bundled and the licence files come from
-# `go version -m` and `sondpkg go-licences`, and a copyleft module ships its module zip.
+# A linkage naming Go is a Go binary: bundled and the licence files of its Go side come from
+# `go version -m` and `sondpkg go-licences`, and a copyleft module ships its module zip. A cgo
+# binary (CGO_ENABLED=1) must link statically through SOND_CC: its C side is then in the maps.
 #
 # Licence opinion (dictamen-licencias-paquetes-distro-sond.md, section 3): when
 # the licence is copyleft or Apache-2.0, the upstream must be a commit and every
@@ -137,6 +138,8 @@ for a in "\$@"; do
 done
 # configure checks: autoconf's conftest, meson's probes under meson-private/
 case \$(basename "\$out") in conftest*) link=0 ;; esac
+# cgo's _cgo_.o: a link the go command makes only to read the imported symbols
+case \$(basename "\$out") in _cgo_.o) link=0 ;; esac
 case \$out in meson-private/* | */meson-private/*) link=0 ;; esac
 [ \$link = 1 ] && exec "$PREFIX/bin/musl-gcc" "\$@" -Wl,-Map="\$(mktemp "$maps/map.XXXXXX")"
 exec "$PREFIX/bin/musl-gcc" "\$@"
@@ -271,7 +274,28 @@ if [ "$go_bin" = 1 ]; then
 		fi
 	done < <(find "$payload" -type f -perm -u+x -print0 | sort -z)
 	[ "$n" -gt 0 ] || { printf 'build.sh: linkage "%s" names Go but the payload has no Go binary\n' "$linkage" >&2; exit 1; }
-	sondpkg go-licences --name "$name" "${infos[@]}" --modcache "$gomodcache" \
+	# cgo (licence opinion 2.10 (b)): the C code linked is what the maps recorded, which holds
+	# only for a static binary linked through SOND_CC against musl.
+	cgo_args=()
+	for info in "$work"/go-info/*.txt; do
+		grep -qxF "$(printf '\tbuild\tCGO_ENABLED=1')" "$info" || continue
+		bin=$(head -n1 "$info" | sed 's/: go[0-9.]*$//')
+		if [ "$links_musl" = 0 ]; then
+			printf 'build.sh: %s is a cgo binary but linkage "%s" names no musl\n' "${bin#"$payload"/}" "$linkage" >&2
+			exit 1
+		fi
+		if LC_ALL=C readelf -lW "$bin" 2>/dev/null | grep -q 'INTERP' ||
+			LC_ALL=C readelf -dW "$bin" 2>/dev/null | grep -q '(NEEDED)'; then
+			printf 'build.sh: the cgo binary %s is not statically linked: C code it loads at run time is in no link map; link with -ldflags "-linkmode external -extldflags -static"\n' "${bin#"$payload"/}" >&2
+			exit 1
+		fi
+		if ! compgen -G "$maps/map.*" >/dev/null; then
+			printf 'build.sh: the cgo binary %s was not linked through $SOND_CC (CC=$SOND_CC), so the C code it links cannot be known\n' "${bin#"$payload"/}" >&2
+			exit 1
+		fi
+		cgo_args=(--cgo)
+	done
+	sondpkg go-licences --name "$name" "${infos[@]}" "${cgo_args[@]}" --modcache "$gomodcache" \
 		--goroot "$(go env GOROOT)" --out "$work/go-licences" >&2
 	while IFS= read -r b; do bundled+=("$b"); done <"$work/go-licences/bundled.txt"
 	while IFS= read -r spec; do
@@ -324,7 +348,7 @@ if [ "$lane_rc" = 0 ]; then
 	{
 		printf '#!/bin/sh\n# How %s %s was built from this source (sond-build-action).\n' "$name" "$version"
 		printf '# Fork: github.com/%s@%s; upstream: %s\n' "$repository" "$sha" "$upstream"
-		[ "$go_bin" = 0 ] || printf '# Toolchain: %s, CGO_ENABLED=0, modules from the go.sum of the fork\n' "$(go env GOVERSION)"
+		[ "$go_bin" = 0 ] || printf '# Toolchain: %s, CGO_ENABLED=%s, modules from the go.sum of the fork\n' "$(go env GOVERSION)" "$([ ${#cgo_args[@]} -gt 0 ] && echo 1 || echo 0)"
 		[ "$links_musl" = 0 ] || printf '# Toolchain: musl %s (musl-%s.tar.gz, commit %s), static.\n' "${MUSL_TAG#v}" "${MUSL_TAG#v}" "$MUSL_COMMIT"
 		printf '# SOND_CC: musl-gcc; SOND_CFLAGS: %s; SOND_LDFLAGS: %s\n' "$(repro_cflags '$SRC')" "$(repro_ldflags)"
 		for dep in "${depends[@]}"; do printf '# Depends: %s, installed into $SOND_SYSROOT (-I$SOND_SYSROOT/include -L$SOND_SYSROOT/lib)\n' "$dep"; done
