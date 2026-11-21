@@ -1,0 +1,104 @@
+name: Sond package build
+description: Build a static musl package from a Sond fork and leave a verified RFC-0018 bundle.
+branding:
+  icon: package
+  color: gray-dark
+
+inputs:
+  name:
+    description: Package name.
+    required: true
+  version:
+    description: Package version.
+    required: true
+  license:
+    description: SPDX licence expression of the package.
+    required: true
+  upstream:
+    description: The project the fork comes from, as HOST/OWNER/REPO@SHA40.
+    required: true
+  build:
+    description: >-
+      Shell command run inside the fork. It compiles with $SOND_CC, $SOND_CFLAGS
+      and $SOND_LDFLAGS and installs into $SOND_PAYLOAD.
+    required: true
+  license-files:
+    description: Licence files to ship, one PATH[=DEST] per line, relative to the fork.
+    default: ""
+  linkage:
+    description: Linkage line recorded in the manifest.
+    default: static musl 1.2.5 (MIT)
+  tier:
+    description: Distribution tier.
+    default: public
+  fork-path:
+    description: Path of the fork checkout (a full clone, not a shallow one).
+    default: .
+  out:
+    description: Directory the bundle is written to.
+    default: sond-out
+  distro-pkg-ref:
+    description: Branch or tag of fredyk/sond-distro-pkg that provides sondpkg and the toolchain recipe.
+    default: main
+  upload-artifact:
+    description: Upload the bundle as a workflow artifact.
+    default: "true"
+
+outputs:
+  bundle:
+    description: Path of the verified bundle.
+    value: ${{ steps.build.outputs.bundle }}
+  payload_hash:
+    description: Bundle hash (sha256) from the manifest.
+    value: ${{ steps.build.outputs.payload_hash }}
+
+runs:
+  using: composite
+  steps:
+    - id: distro
+      shell: bash
+      env:
+        REF: ${{ inputs.distro-pkg-ref }}
+      run: |
+        d="$RUNNER_TEMP/sond/sond-distro-pkg"
+        rm -rf "$d"
+        git clone -q --depth 1 --branch "$REF" https://github.com/fredyk/sond-distro-pkg "$d"
+        echo "musl_commit=$(sed -n 's/^MUSL_COMMIT=//p' "$d/toolchain/common.sh")" >>"$GITHUB_OUTPUT"
+        echo "recipe=$(cat "$d/toolchain/common.sh" "$d/toolchain/build-musl.sh" | sha256sum | cut -c1-16)" >>"$GITHUB_OUTPUT"
+
+    - uses: actions/cache@v4
+      with:
+        path: ${{ runner.temp }}/sond/forks/toolchain
+        key: sond-musl-${{ runner.os }}-${{ runner.arch }}-${{ steps.distro.outputs.musl_commit }}-${{ steps.distro.outputs.recipe }}
+
+    - id: build
+      shell: bash
+      env:
+        SOND_WORK: ${{ runner.temp }}/sond
+        SOND_DISTRO_PKG: ${{ runner.temp }}/sond/sond-distro-pkg
+        IN_FORK: ${{ inputs.fork-path }}
+        IN_REPOSITORY: ${{ github.repository }}
+        IN_NAME: ${{ inputs.name }}
+        IN_VERSION: ${{ inputs.version }}
+        IN_LICENSE: ${{ inputs.license }}
+        IN_UPSTREAM: ${{ inputs.upstream }}
+        IN_BUILD: ${{ inputs.build }}
+        IN_LICENSE_FILES: ${{ inputs.license-files }}
+        IN_LINKAGE: ${{ inputs.linkage }}
+        IN_TIER: ${{ inputs.tier }}
+        IN_OUT: ${{ inputs.out }}
+      run: |
+        args=(--fork "$IN_FORK" --repository "$IN_REPOSITORY" --name "$IN_NAME"
+          --version "$IN_VERSION" --license "$IN_LICENSE" --upstream "$IN_UPSTREAM"
+          --build "$IN_BUILD" --linkage "$IN_LINKAGE" --tier "$IN_TIER" --out "$IN_OUT")
+        while IFS= read -r f; do
+          [ -n "$f" ] && args+=(--license-file "$f")
+        done <<<"$IN_LICENSE_FILES"
+        "$GITHUB_ACTION_PATH/build.sh" "${args[@]}" >>"$GITHUB_OUTPUT"
+
+    - if: inputs.upload-artifact == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: sond-${{ inputs.name }}-${{ inputs.version }}
+        path: ${{ steps.build.outputs.bundle }}
+        if-no-files-found: error
