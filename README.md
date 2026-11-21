@@ -44,6 +44,7 @@ jobs:
 | `upstream` | yes | | `HOST/OWNER/REPO@SHA40` the fork comes from |
 | `build` | yes | | shell command run in the fork; installs into `$SOND_PAYLOAD` |
 | `license-files` | | | one `PATH[=DEST]` per line, relative to the fork |
+| `depends` | | | one `NAME VERSION` per line: published packages fetched from dist.sond.dev, checked under the pinned log key, into `$SOND_SYSROOT` (added to `SOND_CFLAGS`, `SOND_LDFLAGS` and pkg-config); their licences ship in the package |
 | `linkage` | | `static musl 1.2.5 (MIT)` | linkage line in the manifest |
 | `tier` | | `public` | distribution tier |
 | `fork-path` | | `.` | fork checkout (full clone) |
