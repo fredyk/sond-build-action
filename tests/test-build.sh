@@ -180,6 +180,18 @@ FAKE_LIB=$work/lib/libgreet.a FAKE_FETCH_LOG=$work/fetch.log SOND_WORK=$work/w4c
 	--out "$work/out4c" >/dev/null 2>"$work/build4c.err"
 rc=$?
 [ "$rc" != 0 ] && grep -q "SOND_CC" "$work/build4c.err" && ok "dependencies with no link through SOND_CC are refused" || { bad "dependencies with no link through SOND_CC are refused (rc=$rc)"; tail -5 "$work/build4c.err"; }
+# meson's configure checks link their probes under meson-private/, like autoconf's conftest: not
+# what the package links.
+newws w4e
+FAKE_LIB=$work/lib/libgreet.a FAKE_FETCH_LOG=$work/fetch.log SOND_WORK=$work/w4e SOND_DISTRO_PKG=$distro bash "$here/build.sh" \
+	--fork "$fork" --repository fredyk/hello-sond --name hello --version 1.7 --license 0BSD \
+	--upstream github.com/example/hello@0000000000000000000000000000000000000000 --license-file LICENSE \
+	--depends "greet 2.0" --build 'mkdir -p meson-private/tmp1 "$SOND_PAYLOAD/lib" && $SOND_CC $SOND_CFLAGS -static $SOND_LDFLAGS -o meson-private/tmp1/output.exe linked.c -lgreet && $SOND_CC $SOND_CFLAGS -c -o greet.o greet.c && ar rcs "$SOND_PAYLOAD/lib/libhello.a" greet.o && rm -rf meson-private greet.o' \
+	--out "$work/out4e" >/dev/null 2>"$work/build4e.err"
+rc=$?
+b4e=$(ls -d "$work/out4e"/hello-1.7-* 2>/dev/null | head -n1)
+[ "$rc" = 0 ] && [ -n "$b4e" ] && ! grep -q '^ *bundled' "$b4e/MANIFEST" && ok "meson's probes are not what the package links" ||
+	{ bad "meson's probes are not what the package links (rc=$rc)"; tail -5 "$work/build4e.err"; }
 # A static library compiled against a dependency's headers links nothing: there is no program
 # for the maps to see, the payload holds no executable, and bundled stays empty.
 newws w4d

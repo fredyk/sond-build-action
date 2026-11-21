@@ -135,7 +135,9 @@ for a in "\$@"; do
 	[ "\$prev" = -o ] && out=\$a
 	prev=\$a
 done
+# configure checks: autoconf's conftest, meson's probes under meson-private/
 case \$(basename "\$out") in conftest*) link=0 ;; esac
+case \$out in meson-private/* | */meson-private/*) link=0 ;; esac
 [ \$link = 1 ] && exec "$PREFIX/bin/musl-gcc" "\$@" -Wl,-Map="\$(mktemp "$maps/map.XXXXXX")"
 exec "$PREFIX/bin/musl-gcc" "\$@"
 WRAP
