@@ -312,5 +312,75 @@ rc=$?
 	ok "a build against linux-headers without dependency files is refused" ||
 	bad "a build against linux-headers without dependency files is refused (rc=$rc: $(tail -2 "$work/build8b.err"))"
 
+# A pure Go binary (licence opinion 2.10 (a)): no musl, the Go toolchain's licence and every
+# linked module's licence files ship, module NOTICEs are aggregated, bundled lists go and each
+# module, and a copyleft module puts the package in the source lane with that module's zip.
+# Modules come from a file GOPROXY, so the test needs no network.
+proxy=$work/goproxy
+mkmod() { # <module> <licence text> [notice]
+	python3 - "$proxy" "$1" "$2" "${3:-}" <<'PY'
+import os, sys, zipfile
+proxy, mod, licence, notice = sys.argv[1:]
+d = os.path.join(proxy, mod, "@v")
+os.makedirs(d, exist_ok=True)
+pkg = mod.rsplit("/", 1)[-1]
+gomod = "module %s\n\ngo 1.22\n" % mod
+open(os.path.join(d, "list"), "w").write("v1.0.0\n")
+open(os.path.join(d, "v1.0.0.info"), "w").write('{"Version":"v1.0.0"}\n')
+open(os.path.join(d, "v1.0.0.mod"), "w").write(gomod)
+with zipfile.ZipFile(os.path.join(d, "v1.0.0.zip"), "w") as z:
+    root = "%s@v1.0.0/" % mod
+    z.writestr(root + "go.mod", gomod)
+    z.writestr(root + "LICENSE", licence)
+    if notice:
+        z.writestr(root + "NOTICE", notice)
+    z.writestr(root + pkg + ".go", 'package %s\n\nfunc Word() string { return "%s" }\n' % (pkg, pkg))
+PY
+}
+mkmod example.com/greet "Permission is hereby granted, free of charge, to any person obtaining a copy" "greet NOTICE: Copyright 2026 Greet Authors"
+mkmod example.com/mozilla "Mozilla Public License Version 2.0"
+gofork() { # <dir> <module to use>
+	mkdir -p "$1"
+	printf 'module example.com/hi\n\ngo 1.22\n\nrequire %s v1.0.0\n' "$2" >"$1/go.mod"
+	printf 'package main\n\nimport (\n\t"fmt"\n\t"%s"\n)\n\nfunc main() { fmt.Println("hi-" + %s.Word()) }\n' "$2" "${2##*/}" >"$1/main.go"
+	printf '                                 Apache License\n                           Version 2.0, January 2004\n' >"$1/COPYING"
+	(cd "$1" && GOPROXY=file://$proxy GOSUMDB=off GOFLAGS=-mod=mod GOMODCACHE=$work/gomod-prep go mod tidy >/dev/null 2>&1)
+	git -C "$1" init -q -b sond && gitc "$1" add -A && gitc "$1" commit -q -m hi
+}
+go_build='mkdir -p "$SOND_PAYLOAD/bin" && CGO_ENABLED=0 go build -trimpath -buildvcs=false -o "$SOND_PAYLOAD/bin/hi" .'
+run_go() { # <workspace> <fork>
+	GOPROXY=file://$proxy GOSUMDB=off GOFLAGS=-mod=mod GOMODCACHE=$work/$1/gomod GOTOOLCHAIN=local \
+	SOND_WORK=$work/$1/sond RUNNER_TEMP=$work/$1 SOND_DISTRO_PKG=${SOND_DISTRO_PKG:-} \
+		bash "$here/build.sh" --fork "$2" --repository fredyk/hi-sond --name hi --version 1.0 --license Apache-2.0 \
+		--upstream "github.com/example/hi@$(git -C "$2" rev-parse HEAD)" --license-file COPYING \
+		--linkage "static Go $(go env GOVERSION | sed 's/^go//'), no libc" --build "$go_build" --out "$work/out-$1"
+}
+gofork "$work/hi-sond" example.com/greet
+mkdir -p "$work/w9/sond/forks" && cp -a "$work/w/forks/toolchain" "$work/w9/sond/forks/"
+run_go w9 "$work/hi-sond" >"$work/build9.log" 2>"$work/build9.err"
+rc=$?
+[ "$rc" = 0 ] && ok "a pure Go build succeeds" || { bad "a pure Go build succeeds (rc=$rc)"; tail -20 "$work/build9.err"; }
+b9=$(sed -n 's/^bundle=//p' "$work/build9.log")
+l9=$b9/payload/share/licenses/hi
+[ "$("$b9/payload/bin/hi" 2>/dev/null)" = "hi-greet" ] && ok "the Go binary runs" || bad "the Go binary runs"
+grep -q "\"go $(go env GOVERSION | sed 's/^go//') BSD-3-Clause\"" "$b9/MANIFEST" 2>/dev/null &&
+	ok "bundled lists the Go toolchain" || bad "bundled lists the Go toolchain"
+grep -q '"example.com/greet v1.0.0 MIT"' "$b9/MANIFEST" 2>/dev/null &&
+	ok "bundled lists each module with the licence its files name" || bad "bundled lists each module with the licence its files name"
+[ -f "$l9/go-LICENSE" ] && ok "Go's licence ships" || bad "Go's licence ships"
+[ -f "$l9/go/example.com/greet@v1.0.0/LICENSE" ] && ok "the module's licence ships" || bad "the module's licence ships"
+grep -q 'greet NOTICE: Copyright 2026 Greet Authors' "$l9/NOTICE" 2>/dev/null &&
+	ok "the module's NOTICE is in the aggregated NOTICE" || bad "the module's NOTICE is in the aggregated NOTICE"
+[ -f "$l9/COPYING" ] && [ ! -e "$l9/musl-COPYRIGHT" ] && ok "Apache text ships and no musl COPYRIGHT" || bad "Apache text ships and no musl COPYRIGHT"
+! grep -q '^source_bundle=' "$work/build9.log" && ok "a permissive Go package needs no source lane" || bad "a permissive Go package needs no source lane"
+gofork "$work/hi-mpl-sond" example.com/mozilla
+mkdir -p "$work/w9b/sond/forks" && cp -a "$work/w/forks/toolchain" "$work/w9b/sond/forks/"
+run_go w9b "$work/hi-mpl-sond" >"$work/build9b.log" 2>"$work/build9b.err"
+rc=$?
+[ "$rc" = 0 ] && ok "a Go build linking an MPL module succeeds" || { bad "a Go build linking an MPL module succeeds (rc=$rc)"; tail -20 "$work/build9b.err"; }
+s9=$(sed -n 's/^source_bundle=//p' "$work/build9b.log")
+[ -n "$s9" ] && python3 -c 'import sys, zipfile; print("\n".join(zipfile.ZipFile(sys.argv[1]).namelist()))' "$s9/payload/share/src/hi/example.com/mozilla@v1.0.0.zip" 2>/dev/null | grep -q 'mozilla.go' &&
+	ok "the MPL module's source is in the source bundle" || bad "the MPL module's source is in the source bundle ($(ls -R "$s9/payload/share/src" 2>&1 | head -5))"
+
 [ "$fail" = 0 ] && printf 'test-build: OK\n' || printf 'test-build: FAIL\n'
 exit $fail

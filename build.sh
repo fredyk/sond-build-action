@@ -21,6 +21,9 @@
 # archive the linker pulled in is `bundled` with its version and licence, and
 # musl with it; one only included is not.
 #
+# A linkage naming Go is a pure Go binary: bundled and the licence files come from
+# `go version -m` and `sondpkg go-licences`, and a copyleft module ships its module zip.
+#
 # Licence opinion (dictamen-licencias-paquetes-distro-sond.md, section 3): when
 # the licence is copyleft or Apache-2.0, the upstream must be a commit and every
 # file the fork touches must carry "Modified by the Sond project, YYYY-MM-DD"; a
@@ -236,6 +239,31 @@ fi
 links_musl=0
 case $linkage in *musl*) links_musl=1 ;; esac
 [ "$links_musl" = 0 ] || licence_src+=("$SRC_ROOT/musl-sond/COPYRIGHT") licence_dest+=("share/licenses/$name/musl-COPYRIGHT")
+# A pure Go binary (linkage names Go; licence opinion 2.10 (a)): what it links is what
+# `go version -m` says, and sondpkg go-licences reads each module's licence files from the module
+# cache. The Go environment (GOMODCACHE, GOTOOLCHAIN, GOFLAGS...) must be the job's, not set
+# inside the build command, so `go env` here sees the cache the build filled.
+go_bin=0
+[[ $linkage =~ (^|[^A-Za-z])Go([^A-Za-z]|$) ]] && go_bin=1
+if [ "$go_bin" = 1 ]; then
+	command -v go >/dev/null || { printf 'build.sh: linkage "%s" names Go but go is not on PATH\n' "$linkage" >&2; exit 1; }
+	gomodcache=$(go env GOMODCACHE)
+	infos=() n=0
+	mkdir -p "$work/go-info"
+	while IFS= read -r -d '' f; do
+		if go version -m "$f" >"$work/go-info/$n.txt" 2>/dev/null; then
+			infos+=(--build-info "$work/go-info/$n.txt")
+			n=$((n + 1))
+		fi
+	done < <(find "$payload" -type f -perm -u+x -print0 | sort -z)
+	[ "$n" -gt 0 ] || { printf 'build.sh: linkage "%s" names Go but the payload has no Go binary\n' "$linkage" >&2; exit 1; }
+	sondpkg go-licences --name "$name" "${infos[@]}" --modcache "$gomodcache" \
+		--goroot "$(go env GOROOT)" --out "$work/go-licences" >&2
+	while IFS= read -r b; do bundled+=("$b"); done <"$work/go-licences/bundled.txt"
+	while IFS= read -r spec; do
+		licence_src+=("${spec%%=*}") licence_dest+=("${spec#*=}")
+	done <"$work/go-licences/licence-files.txt"
+fi
 
 lane_args=("$license")
 for b in "${bundled[@]}"; do lane_args+=(--bundled "$b"); done
@@ -260,6 +288,17 @@ if [ "$lane_rc" = 0 ]; then
 	for b in "${bundled[@]}"; do
 		read -r b_name b_version _ <<<"$b"
 		[ "$b_name" = musl ] && continue
+		if [ "$go_bin" = 1 ]; then
+			# The Go toolchain is a general-purpose tool used unmodified; a module's source is
+			# the zip the go command verified into the module cache.
+			[ "$b_name" = go ] && continue
+			zip=$gomodcache/cache/download/$(sed -E 's/([A-Z])/!\L\1/g' <<<"$b_name")/@v/$b_version.zip
+			if [ -f "$zip" ]; then
+				mkdir -p "$(dirname "$share/$b_name")"
+				cp "$zip" "$share/$b_name@$b_version.zip"
+				continue
+			fi
+		fi
 		b_source=${dep_source_of[$b_name]}
 		b_repo=${b_source%@*} b_sha=${b_source##*@}
 		clone=$work/dep-src/$b_name
@@ -271,6 +310,7 @@ if [ "$lane_rc" = 0 ]; then
 	{
 		printf '#!/bin/sh\n# How %s %s was built from this source (sond-build-action).\n' "$name" "$version"
 		printf '# Fork: github.com/%s@%s; upstream: %s\n' "$repository" "$sha" "$upstream"
+		[ "$go_bin" = 0 ] || printf '# Toolchain: %s, CGO_ENABLED=0, modules from the go.sum of the fork\n' "$(go env GOVERSION)"
 		[ "$links_musl" = 0 ] || printf '# Toolchain: musl %s (musl-%s.tar.gz, commit %s), static.\n' "${MUSL_TAG#v}" "${MUSL_TAG#v}" "$MUSL_COMMIT"
 		printf '# SOND_CC: musl-gcc; SOND_CFLAGS: %s; SOND_LDFLAGS: %s\n' "$(repro_cflags '$SRC')" "$(repro_ldflags)"
 		for dep in "${depends[@]}"; do printf '# Depends: %s, installed into $SOND_SYSROOT (-I$SOND_SYSROOT/include -L$SOND_SYSROOT/lib)\n' "$dep"; done
