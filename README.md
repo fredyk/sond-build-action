@@ -56,10 +56,30 @@ The build command sees `SOND_CC`, `SOND_CFLAGS`, `SOND_LDFLAGS`,
 `SOND_PAYLOAD` and `SOURCE_DATE_EPOCH`. musl's COPYRIGHT is added to every
 package.
 
+## Linked components and the source lane
+
+`SOND_CC` is a wrapper around the pinned `musl-gcc` that writes a linker map for every real link
+(autoconf's `conftest` links are left out). A dependency whose archive the linker pulled in is
+recorded in the manifest's `bundled` as `NAME VERSION LICENCE`, with musl next to it; one that is
+only included is not.
+
+The licence opinion (section 3) is applied before anything is built: when the licence is
+copyleft or Apache-2.0, the `upstream` must be a commit (an annotated tag object is refused) and
+every file the fork touches must carry `Modified by the Sond project, YYYY-MM-DD`; a GPL fork
+may not carry Sond's Apache-2.0 header.
+
+When the licence or a bundled component is copyleft (GPL, LGPL, MPL), the corresponding source
+is built as `<name>-source`, linkage `source`, under `share/src/<name>/`: the fork at its
+commit, the patches since upstream (`patches/`), `build-recipe.sh`, musl's source and the source
+of every bundled component at the commit its own manifest names. The package names that bundle
+in `source_object`, and dist.sond.dev refuses it until the source is logged: publish the
+`source_bundle` output first (sond-publish-action's `source-bundle` input).
+
 ## Outputs
 
 - `bundle`: path of the verified bundle.
 - `payload_hash`: the bundle hash (sha256) from its manifest.
+- `source_bundle`: path of the `<name>-source` bundle, set only in the source lane.
 
 ## Tests
 

@@ -32,7 +32,7 @@ check("inputs.depends" in str((build.get("env") or {}).get("IN_DEPENDS", "")), "
 check('args+=(--depends "$d")' in build.get("run", ""), "each depends line becomes a --depends")
 check(re.search(r'>>\s*"\$GITHUB_OUTPUT"', build.get("run", "")) is not None, "build.sh's stdout becomes the step outputs")
 outs = a.get("outputs") or {}
-for o in ["bundle", "payload_hash"]:
+for o in ["bundle", "payload_hash", "source_bundle"]:
     check(outs.get(o, {}).get("value") == "${{ steps.build.outputs.%s }}" % o, f"output {o} from the build step")
 cache = next((s for s in steps if str(s.get("uses", "")).startswith("actions/cache@")), {})
 w = cache.get("with") or {}
@@ -43,6 +43,9 @@ idx = {id(s): n for n, s in enumerate(steps)}
 check(cache and build and idx[id(cache)] < idx[id(build)], "the cache is restored before the build")
 up = next((s for s in steps if str(s.get("uses", "")).startswith("actions/upload-artifact@")), {})
 check("steps.build.outputs.bundle" in str((up.get("with") or {}).get("path", "")), "the bundle is uploaded as an artifact")
+ups = [s for s in steps if str(s.get("uses", "")).startswith("actions/upload-artifact@")]
+src_up = next((s for s in ups if "steps.build.outputs.source_bundle" in str((s.get("with") or {}).get("path", ""))), {})
+check(bool(src_up) and "steps.build.outputs.source_bundle" in str(src_up.get("if", "")), "the source bundle, when there is one, is uploaded too")
 print("test-action: " + ("FAIL" if fail else "OK"))
 sys.exit(fail)
 PY

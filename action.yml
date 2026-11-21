@@ -58,6 +58,11 @@ outputs:
   payload_hash:
     description: Bundle hash (sha256) from the manifest.
     value: ${{ steps.build.outputs.payload_hash }}
+  source_bundle:
+    description: >-
+      Path of the corresponding source bundle (<name>-source), set when the licence or a bundled
+      component is copyleft; publish it before the package (sond-publish-action's source-bundle).
+    value: ${{ steps.build.outputs.source_bundle }}
 
 runs:
   using: composite
@@ -112,4 +117,11 @@ runs:
       with:
         name: sond-${{ inputs.name }}-${{ inputs.version }}
         path: ${{ steps.build.outputs.bundle }}
+        if-no-files-found: error
+
+    - if: inputs.upload-artifact == 'true' && steps.build.outputs.source_bundle != ''
+      uses: actions/upload-artifact@v4
+      with:
+        name: sond-${{ inputs.name }}-source-${{ inputs.version }}
+        path: ${{ steps.build.outputs.source_bundle }}
         if-no-files-found: error
