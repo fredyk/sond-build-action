@@ -7,7 +7,7 @@
 set -uo pipefail
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT
+trap 'chmod -R u+w "$work" 2>/dev/null; rm -rf "$work"' EXIT # Go leaves its module cache read-only
 fail=0
 ok() { printf 'ok   %s\n' "$1"; }
 bad() { printf 'FAIL %s\n' "$1"; fail=1; }
@@ -344,9 +344,8 @@ run_kc() { # <workspace> <build>
 		--upstream github.com/example/kc@0000000000000000000000000000000000000000 --license-file LICENSE \
 		--depends "linux-headers 6.12.77" --build "$2" --out "$work/out-$1"
 }
-mkdir -p "$work/w8/sond/forks" "$work/w8b/sond/forks"
+mkdir -p "$work/w8/sond/forks"
 cp -a "$work/w/forks/toolchain" "$work/w8/sond/forks/"
-cp -a "$work/w/forks/toolchain" "$work/w8b/sond/forks/"
 kc_link='mkdir -p "$SOND_PAYLOAD/bin" && $SOND_CC $SOND_CFLAGS -static $SOND_LDFLAGS -o "$SOND_PAYLOAD/bin/kc" kc.o'
 run_kc w8 '$SOND_CC $SOND_CFLAGS -MD -c kc.c -o kc.o && '"$kc_link" >"$work/build8.log" 2>"$work/build8.err"
 rc=$?
@@ -367,11 +366,20 @@ rc=$?
 b8c=$(sed -n 's/^bundle=//p' "$work/build8c.log")
 [ "$rc" = 0 ] && [ -f "$b8c/payload/share/licenses/kc/linux-headers/linux/perm.h" ] &&
 	ok "libtool's .Plo dependency files are read" || bad "libtool's .Plo dependency files are read (rc=$rc: $(tail -2 "$work/build8c.err"))"
-run_kc w8b '$SOND_CC $SOND_CFLAGS -c kc.c -o kc.o && '"$kc_link" >/dev/null 2>"$work/build8b.err"
+# SOND_CC records the headers of every compile itself, so a build needs no -MD, and a compile
+# run from a directory it cannot write (cgo's probes run in the read-only module cache) works.
+mkdir -p "$work/w8b/sond/forks" && cp -a "$work/w/forks/toolchain" "$work/w8b/sond/forks/"
+run_kc w8b 'mkdir ro && cp kc.c ro/ && chmod a-w ro && (cd ro && $SOND_CC $SOND_CFLAGS -E -o /dev/null kc.c) && $SOND_CC $SOND_CFLAGS -c kc.c -o kc.o && '"$kc_link"'; chmod u+w ro; rm -rf ro' >"$work/build8b.log" 2>"$work/build8b.err"
 rc=$?
-[ "$rc" != 0 ] && grep -q -- '-MD' "$work/build8b.err" &&
-	ok "a build against linux-headers without dependency files is refused" ||
-	bad "a build against linux-headers without dependency files is refused (rc=$rc: $(tail -2 "$work/build8b.err"))"
+b8b=$(sed -n 's/^bundle=//p' "$work/build8b.log")
+[ "$rc" = 0 ] && [ -f "$b8b/payload/share/licenses/kc/linux-headers/linux/perm.h" ] &&
+	ok "SOND_CC records the headers a compile used, with no -MD" || bad "SOND_CC records the headers a compile used, with no -MD (rc=$rc: $(tail -2 "$work/build8b.err"))"
+mkdir -p "$work/w8d/sond/forks" && cp -a "$work/w/forks/toolchain" "$work/w8d/sond/forks/"
+run_kc w8d 'gcc -isystem "$SOND_SYSROOT/include" -c kc.c -o kc.o && '"$kc_link" >/dev/null 2>"$work/build8d.err"
+rc=$?
+[ "$rc" != 0 ] && grep -q -- 'SOND_CC' "$work/build8d.err" &&
+	ok "a build against linux-headers that compiles past SOND_CC with no dependency files is refused" ||
+	bad "a build against linux-headers that compiles past SOND_CC with no dependency files is refused (rc=$rc: $(tail -2 "$work/build8d.err"))"
 
 # A pure Go binary (licence opinion 2.10 (a)): no musl, the Go toolchain's licence and every
 # linked module's licence files ship, module NOTICEs are aggregated, bundled lists go and each

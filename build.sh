@@ -125,11 +125,16 @@ if [ -e "$payload" ]; then
 fi
 mkdir -p "$payload"
 
-# SOND_CC records every real link in a map under $maps.
-maps=$work/link-maps
-mkdir -p "$maps" "$work/bin"
+# SOND_CC records every real link in a map under $maps, and the headers every compile used in
+# a dependency file under $deps: gcc writes SUNPRO_DEPENDENCIES (system headers included) when
+# the command line asks no -M output of its own, so no recipe needs -MD, and a compile run from
+# a directory it cannot write (cgo's probes, in the read-only module cache) still works.
+maps=$work/link-maps deps=$work/compile-deps
+mkdir -p "$maps" "$deps" "$work/bin"
 cat >"$work/bin/sond-cc" <<WRAP
 #!/bin/sh
+SUNPRO_DEPENDENCIES=\$(mktemp "$deps/d.XXXXXX")
+export SUNPRO_DEPENDENCIES
 link=1 out=a.out prev=
 for a in "\$@"; do
 	case \$a in -c|-E|-S|-M|-MM|-dump*|-print-*|--version|-v|-V|--help) link=0 ;; esac
@@ -239,11 +244,11 @@ done
 # the kernel COPYING carries its notice (licence opinion 3.1, rule 10). The compiler's dependency
 # files (-MD: automake's .deps/*.Po, libtool's *.Plo, or *.d) say which headers were used.
 if [ -n "${dep_version_of[linux-headers]:-}" ]; then
-	used=$({ find "$fork" -type f \( -name '*.d' -o -name '*.Po' -o -name '*.Plo' \) -exec cat {} + 2>/dev/null || true; } |
+	used=$({ find "$fork" "$deps" -type f \( -name '*.d' -o -name '*.Po' -o -name '*.Plo' -o -name 'd.*' \) -exec cat {} + 2>/dev/null || true; } |
 		tr ' \\\t' '\n\n\n' | sed 's/:$//; /^$/d' | xargs -r realpath -m | sort -u |
 		comm -12 - <(printf '%s\n' "${dep_headers_of[linux-headers]}" | xargs -r realpath -m | sort -u))
 	if [ -z "$used" ]; then
-		printf 'build.sh: built against linux-headers but no compiler dependency file (-MD) names one of its headers, so which notices must ship cannot be known; compile with -MD\n' >&2
+		printf 'build.sh: built against linux-headers but neither a compile through $SOND_CC nor a compiler dependency file (-MD) names one of its headers, so which notices must ship cannot be known; compile with $SOND_CC\n' >&2
 		exit 1
 	fi
 	while IFS= read -r rel; do
