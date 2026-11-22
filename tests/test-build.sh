@@ -220,6 +220,17 @@ rc=$?
 [ "$rc" = 0 ] && ok "a static library built against a dependency's headers succeeds" || { bad "a static library built against a dependency's headers succeeds (rc=$rc)"; tail -5 "$work/build4d.err"; }
 b4d=$(ls -d "$work/out4d"/hello-1.6-* 2>/dev/null | head -n1)
 [ -n "$b4d" ] && ! grep -q '^ *bundled' "$b4d/MANIFEST" && ok "the library bundles nothing" || bad "the library bundles nothing"
+# A static library holding LTO bytecode only links with the exact compiler version that wrote it
+# (a liblxc.a from gcc 13 failed to link under gcc 14): an archive with LTO objects is refused.
+newws w4f
+FAKE_LIB=$work/lib/libgreet.a FAKE_FETCH_LOG=$work/fetch.log SOND_WORK=$work/w4f SOND_DISTRO_PKG=$distro bash "$here/build.sh" \
+	--fork "$fork" --repository fredyk/hello-sond --name hello --version 1.8 --license 0BSD \
+	--upstream github.com/example/hello@0000000000000000000000000000000000000000 --license-file LICENSE \
+	--depends "greet 2.0" --build 'mkdir -p "$SOND_PAYLOAD/lib" && $SOND_CC $SOND_CFLAGS -flto -c -o greet.o greet.c && gcc-ar rcs "$SOND_PAYLOAD/lib/libhello.a" greet.o && rm -f greet.o' \
+	--out "$work/out4f" >/dev/null 2>"$work/build4f.err"
+rc=$?
+[ "$rc" != 0 ] && grep -q "LTO" "$work/build4f.err" && grep -q "lib/libhello.a" "$work/build4f.err" &&
+	ok "a static library with LTO bytecode is refused" || { bad "a static library with LTO bytecode is refused (rc=$rc)"; tail -5 "$work/build4f.err"; }
 
 # The GPL source lane. A fork whose upstream commit is in its history, a marked change, the
 # corresponding source published as <name>-source: the fork at its commit, the patches since

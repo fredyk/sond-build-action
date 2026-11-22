@@ -251,6 +251,14 @@ if [ -n "${dep_version_of[linux-headers]:-}" ]; then
 		licence_src+=("$SOND_SYSROOT/include/$rel") licence_dest+=("share/licenses/$name/linux-headers/$rel")
 	done < <(sondpkg linux-header-notices --include "$SOND_SYSROOT/include" $(sed "s|^$(realpath -m "$SOND_SYSROOT/include")/||" <<<"$used"))
 fi
+# A static library holding LTO bytecode links only under the exact compiler version that wrote
+# it; whoever links the package later has another one. Archives must carry machine code.
+while IFS= read -r -d '' archive; do
+	if LC_ALL=C readelf -SW "$archive" 2>/dev/null | grep -q '\.gnu\.lto_'; then
+		printf 'build.sh: %s holds LTO bytecode, which links only under the compiler version that wrote it; build it without LTO (meson: -Db_lto=false; else drop -flto)\n' "${archive#"$payload"/}" >&2
+		exit 1
+	fi
+done < <(find "$payload" -type f -name '*.a' -print0)
 # A package whose linkage names musl links it statically, and musl's COPYRIGHT must ship
 # inside it; a package with no binary (headers) names no musl and carries none.
 links_musl=0
