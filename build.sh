@@ -310,6 +310,21 @@ if [ "$go_bin" = 1 ]; then
 		licence_src+=("${spec%%=*}") licence_dest+=("${spec#*=}")
 	done <"$work/go-licences/licence-files.txt"
 fi
+# The texts the rules ask for by name (an LGPL or MPL licence, the package's or a linked
+# component's): when no file above ships one, a dependency that publishes it under that name
+# provides it.
+for text in LGPL-2.1 LGPL-3.0 GPL-3.0 MPL-2.0; do
+	have=0
+	for d in "${licence_dest[@]}"; do [ "$d" = "share/licenses/$name/$text" ] && have=1 && break; done
+	[ "$have" = 0 ] || continue
+	for dep_name in "${dep_names[@]}"; do
+		f=$SOND_SYSROOT/share/licenses/$dep_name/$text
+		if [ -f "$f" ]; then
+			licence_src+=("$f") licence_dest+=("share/licenses/$name/$text")
+			break
+		fi
+	done
+done
 
 lane_args=("$license")
 for b in "${bundled[@]}"; do lane_args+=(--bundled "$b"); done

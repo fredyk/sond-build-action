@@ -92,6 +92,9 @@ with open(os.path.join(into, "include", "greet.h"), "w") as h:
 os.makedirs(os.path.join(into, "share", "licenses", sys.argv[2]), exist_ok=True)
 with open(os.path.join(into, "share", "licenses", sys.argv[2], "COPYING"), "w") as h:
     h.write("greet licence\n")
+for text in os.environ.get("FAKE_TEXTS", "").split():
+    with open(os.path.join(into, "share", "licenses", sys.argv[2], text), "w") as h:
+        h.write("%s text from %s\n" % (text, sys.argv[2]))
 if sys.argv[2] == "linux-headers":
     os.makedirs(os.path.join(into, "include", "linux"), exist_ok=True)
     with open(os.path.join(into, "include", "linux", "note.h"), "w") as h:
@@ -104,7 +107,7 @@ if lib:
     os.makedirs(os.path.join(into, "lib"), exist_ok=True)
     shutil.copy(lib, os.path.join(into, "lib", "libgreet.a"))
 print("object=sha256:" + "0" * 64)
-print("license=MIT")
+print("license=" + os.environ.get("FAKE_LICENSE", "MIT"))
 print("source=" + os.environ.get("FAKE_SOURCE", "github.com/fredyk/greet-sond@" + "1" * 40))
 PY
 cat >"$fork/greet.c" <<'C'
@@ -442,6 +445,18 @@ s9=$(sed -n 's/^source_bundle=//p' "$work/build9b.log")
 
 # A cgo binary (licence opinion 2.10 (b)): the Go side comes from `go version -m`, the C side
 # from the link maps, like any C program. It links statically through SOND_CC, so musl ships
+# A linked LGPL dependency obliges the LGPL text by name; the dependency publishes it, and that
+# file ships under the name the rules ask for, in the package and in its corresponding source.
+gpl_args[9]="github.com/example/gpl@$upstream_sha"
+FAKE_LICENSE=LGPL-2.1-or-later FAKE_TEXTS=LGPL-2.1 run_gpl w5t "$gpl" "$work/out5t" >"$work/build5t.log" 2>"$work/build5t.err"
+rc=$?
+[ "$rc" = 0 ] && ok "a build linking an LGPL dependency succeeds" || { bad "a build linking an LGPL dependency succeeds (rc=$rc)"; grep -m3 "error" "$work/build5t.err"; }
+for k in bundle source_bundle; do
+	d=$(sed -n "s/^$k=//p" "$work/build5t.log")
+	n=gpl; [ "$k" = source_bundle ] && n=gpl-source
+	grep -q "LGPL-2.1 text from greet" "$d/payload/share/licenses/$n/LGPL-2.1" 2>/dev/null &&
+		ok "the $k ships the dependency's LGPL-2.1 by name" || bad "the $k ships the dependency's LGPL-2.1 by name"
+done
 # and the dependency's archive is bundled.
 cgofork() { # <dir>
 	gofork "$1" example.com/greet
